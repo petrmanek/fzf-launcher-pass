@@ -1,0 +1,97 @@
+#!/bin/bash
+# Very basic interface for pass using fzf
+#
+# Based on:      https://gitlab.com/fneu/sway-dotfiles/-/blob/master/bin/fzf-launcher-pass
+# Customized by: Petr Mánek (https://petrmanek.cz)
+
+###############################################################################
+# Configuration
+###############################################################################
+
+# Where pass has its .gpg files
+PWD_STORE=~/.password-store
+
+# Where we save fzf choice history (used to determine most frequent passwords)
+PWD_HISTORY_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/${0##*/}-history.txt"
+
+# Where is the ignore-file stored (determines which secrets are omitted)
+PWD_IGNORE_FILE=~/.passmenu_ignore
+
+###############################################################################
+
+list_passwords() {
+	shopt -s nullglob globstar
+
+	# Put all secrets' names into an array
+	cd "${PWD_STORE}" || exit
+	PWD_LIST=(**/*.gpg)
+
+	# Remove secrets that match with ignore patterns
+	IGNORE_PATTERNS=$(cat ${PWD_IGNORE_FILE})
+	for PATTERN in "${IGNORE_PATTERNS}"; do
+		PWD_LIST=("${PWD_LIST[@]//${PATTERN}/}")
+	done
+
+	# Print out everything rest
+	printf '%s\n' "${PWD_LIST[@]%.gpg}" | sort -n
+}
+
+_run_select() {
+	# Pick a secret, any secret
+	SECRET=$(list_passwords | fzf --history=${PWD_HISTORY_FILE}) || exit 1
+
+	# Use the `otp` submodule for one-time passwords
+	SUBCOMMAND=show
+	if pass show "${SECRET}" | grep -q '^otpauth://'; then
+		SUBCOMMAND=otp
+	fi
+
+	# Spawn myself in "copy" mode and pipe the secret directly through stdin
+	nohup "${0}" copy <<<"$(pass ${SUBCOMMAND} ${SECRET} | head -1)" >/dev/null 2>&1 & disown
+
+	# For some annoying reason, we need to wait a bit here otherwise the spawned
+	# process, albeit disowned, will terminate
+	sleep 0.1
+}
+
+_run_copy() {
+	# This waiting time is here purely to allow the parent window to close, eek
+	sleep 0.3
+
+	# Type out the secret directly from stdin, wait 20ms between keys
+	tr -d '\n' | ydotool type --key-delay 20 --file -
+
+	# Alternative #1: copy stuff to clipboard using pass
+	# WARNING: will not work because on Wayland the selection buffer is cleared
+	#          on shell exit :/
+	#pass ${SUBCOMMAND} -c ${SECRET}
+
+	# Alternative #2: copy stuff using wl-copy, note that we are storing the
+	#                 secret in the environment, which could be considered unsafe
+	# WARNING: will not work for the same reason as the above command
+	#PASSWD_PASS=$(pass ${SUBCOMMAND} ${SECRET} | head -1)
+	#nohup wl-copy --paste-once <<<"${PASSWD_PASS}" >/dev/null 2>&1
+}
+
+###############################################################################
+# Main entry point
+###############################################################################
+
+MODE=${1:-select}
+shift
+
+case ${MODE} in
+	select)
+		_run_select
+		;;
+
+	copy)
+		_run_copy
+		;;
+
+	*)
+		echo "ERROR: unknown mode ${MODE}"
+		exit 1
+		;;
+esac
+
